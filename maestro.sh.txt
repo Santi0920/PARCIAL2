@@ -1,0 +1,147 @@
+#!/bin/bash
+
+echo "desactivar selinux"
+cat <<TEST> /etc/selinux/config
+# This file controls the state of SELinux on the system.
+# SELINUX= can take one of these three values:
+#     enforcing - SELinux security policy is enforced.
+#     permissive - SELinux prints warnings instead of enforcing.
+#     disabled - No SELinux policy is loaded.
+SELINUX=disabled
+# SELINUXTYPE= can take one of three values:
+#     targeted - Targeted processes are protected,
+#     minimum - Modification of targeted policy. Only selected processes are protected.
+#     mls - Multi Level Security protection.
+SELINUXTYPE=targeted
+TEST
+
+
+sudo yum install vim -y
+
+sudo yum install bind-utils bind-libs bind-* -y
+
+echo "zonas"
+cat > /var/named/gorila.com.fwd << 'EOF'
+$ORIGIN gorila.com.
+$TTL 3H
+@       IN      SOA     servidor3.gorila.com. root@gorila.com. (
+                        0          ; serial
+                        1D         ; refresh
+                        1H         ; retry
+                        1W         ; expire
+                        3H         ; minimum TTL
+                        )
+@       IN      NS      servidor3.gorila.com.
+@	IN	NS	servidor2.gorila.com.
+@	IN	NS	firewall.gorila.com.
+@	IN	NS	firepub.gorila.com.
+
+;host en la zona
+
+@       IN      A       192.168.100.4
+@	IN	A	192.168.100.2
+@	IN	A	192.168.100.3
+@	IN	A	209.191.100.3
+servidor3	IN	A	192.168.100.4
+servidor2	IN	A	192.168.100.2
+firewall	IN	A	192.168.100.3
+firepub	IN	A	209.191.100.3
+EOF
+
+cat > /var/named/gorila.com.rev << 'EOF'
+$ORIGIN 100.168.192.in-addr.arpa.
+$TTL 3H
+@       IN      SOA     servidor3.gorila.com. root@gorila.com. (
+                        0          ; serial
+                        1D         ; refresh
+                        1H         ; retry
+                        1W         ; expire
+                        3H         ; minimum TTL
+                        )
+@       IN      NS      servidor3.gorila.com.
+@       IN      NS      servidor2.gorila.com.
+@       IN      NS      firewall.gorila.com.
+@	IN	NS	firepub.gorila.com.
+
+;host en la zona
+
+4	IN	PTR     servidor3.gorila.com.
+2	IN	PTR     servidor2.gorila.com.
+3	IN	PTR     firewall.gorila.com.
+3	IN	PTR     firepub.gorila.com.
+EOF
+
+echo "otorgar permisos"
+sudo chmod 755 /var/named/gorila.com.fwd
+sudo chmod 755 /var/named/gorila.com.rev
+
+echo "se configura e. .named"
+cat <<TEST> /etc/named.conf
+options {
+        listen-on port 53 { 127.0.0.1; 192.168.100.4; };
+        listen-on-v6 port 53 { ::1; };
+        directory       "/var/named";
+        dump-file       "/var/named/data/cache_dump.db";
+        statistics-file "/var/named/data/named_stats.txt";
+        memstatistics-file "/var/named/data/named_mem_stats.txt";
+        recursing-file  "/var/named/data/named.recursing";
+        secroots-file   "/var/named/data/named.secroots";
+	forward only;
+	forwarders { 192.168.100.4; };
+        allow-query     { localhost; 192.168.100.0/24; };
+	allow-transfer { 192.168.100.2; };
+
+        recursion yes;
+
+        dnssec-enable yes;
+        dnssec-validation yes;
+
+        /* Path to ISC DLV key */
+        bindkeys-file "/etc/named.root.key";
+
+        managed-keys-directory "/var/named/dynamic";
+
+        pid-file "/run/named/named.pid";
+        session-keyfile "/run/named/session.key";
+};
+
+logging {
+        channel default_debug {
+                file "data/named.run";
+                severity dynamic;
+        };
+};
+
+zone "." IN {
+        type hint;
+        file "named.ca";
+};
+
+include "/etc/named.rfc1912.zones";
+include "/etc/named.root.key";
+
+zone "gorila.com" IN {
+	type master;
+	file "gorila.com.fwd";
+};
+
+zone "100.168.192.in-addr.arpa" IN {
+	type master;
+	file "gorila.com.rev";
+};
+TEST
+
+echo "se inicia servicio named"
+service named start
+
+echo "revisar las zonas"
+named-checkzone gorila.com /var/named/gorila.com.fwd
+named-checkzone 100.168.192.in-addr.arpa /var/named/gorila.com.rev
+
+echo "resolv"
+cat <<TEST> /etc/resolv.conf
+nameserver 192.168.100.4
+TEST
+
+echo "se reinicia el named para los que se actualice"
+service named restart
